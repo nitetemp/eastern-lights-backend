@@ -113,8 +113,9 @@ def dashboard():
             """
             SELECT DISTINCT ON (employee_id)
                 employee_id, latitude, longitude, beacon_id,
-                beacon_rssi, screen_active, moving,
-                battery_level, tamper_status, created_at
+                beacon_rssi, screen_active, moving, 
+                battery_level, tamper_status,
+                created_at + INTERVAL '4 hours' as created_at
             FROM tracking_logs
             ORDER BY employee_id, created_at DESC
             """
