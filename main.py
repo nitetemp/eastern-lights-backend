@@ -336,11 +336,9 @@ def map_view():
             const map = L.map('map').setView([25.2048, 55.2708], 11);
             L.tileLayer(
               'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-               {
-                 attribution: 'Tiles © Esri',
-                 maxZoom: 19
-                }
-                ).addTo(map);
+               { attribution: 'Tiles © Esri',
+                 maxZoom: 19      }
+            ).addTo(map);
 
             let layerGroup = L.layerGroup().addTo(map);
 
