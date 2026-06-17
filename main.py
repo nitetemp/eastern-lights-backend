@@ -1,12 +1,10 @@
-import csv
-import io
 import os
 from typing import Optional
 
 import psycopg
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Query
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 load_dotenv()
@@ -15,7 +13,6 @@ app = FastAPI(title="Eastern Lights Backend")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 API_KEY = os.getenv("API_KEY", "eastern-lights-secret-key")
-APP_VERSION = "FULL_MAP_FEATURES_2026_06_17_v2"
 
 
 def get_conn():
@@ -50,12 +47,7 @@ class TrackingData(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "Eastern Lights", "version": APP_VERSION}
-
-
-@app.get("/version")
-def version():
-    return {"version": APP_VERSION, "features": ["layer_toggle", "tracks", "staff_markers", "stops_time_spent", "speed", "geofence", "playback", "search", "csv_export", "uae_time"]}
+    return {"status": "ok", "app": "Eastern Lights"}
 
 
 @app.post("/register")
@@ -112,90 +104,92 @@ def track(data: TrackingData, x_api_key: Optional[str] = Header(None)):
     return {"status": "saved"}
 
 
-def fetch_tracks(hours: int = 12, employee_id: Optional[str] = None):
-    conn = get_conn()
-    cur = conn.cursor()
-    params = [hours]
-    where_employee = ""
-    if employee_id:
-        where_employee = "AND t.employee_id = %s"
-        params.append(employee_id)
+def safe_text(value, default="-"):
+    return default if value is None or value == "" else str(value)
 
-    cur.execute(
-        f"""
-        SELECT
-            t.employee_id,
-            COALESCE(s.staff_name, '') AS staff_name,
-            t.latitude,
-            t.longitude,
-            t.accuracy,
-            t.beacon_id,
-            t.beacon_rssi,
-            t.screen_active,
-            t.moving,
-            t.battery_level,
-            t.tamper_status,
-            t.created_at + INTERVAL '4 hours' AS created_at_uae
-        FROM tracking_logs t
-        LEFT JOIN staff s ON s.employee_id = t.employee_id
-        WHERE t.latitude IS NOT NULL
-          AND t.longitude IS NOT NULL
-          AND t.created_at >= NOW() - (%s * INTERVAL '1 hour')
-          {where_employee}
-        ORDER BY t.employee_id, t.created_at ASC
-        """,
-        tuple(params),
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
 
-    items = []
-    for r in rows:
-        created = r[11]
-        items.append(
-            {
-                "employee_id": r[0],
-                "staff_name": r[1],
-                "latitude": float(r[2]) if r[2] is not None else None,
-                "longitude": float(r[3]) if r[3] is not None else None,
-                "accuracy": float(r[4]) if r[4] is not None else None,
-                "beacon_id": r[5],
-                "beacon_rssi": r[6],
-                "screen_active": r[7],
-                "moving": r[8],
-                "battery_level": r[9],
-                "tamper_status": r[10],
-                "created_at": created.strftime("%Y-%m-%d %H:%M:%S") if created else "",
-            }
-        )
-    return items
+def format_time(value):
+    if value is None:
+        return "-"
+    try:
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return str(value)
 
 
 @app.get("/api/tracks")
-def api_tracks(hours: int = Query(12, ge=1, le=168), employee_id: Optional[str] = None):
-    return {"tracks": fetch_tracks(hours=hours, employee_id=employee_id)}
+def api_tracks(limit: int = Query(100, ge=1, le=1000)):
+    """Return recent GPS tracks grouped by employee ID. Times are returned in UAE time."""
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                tl.employee_id,
+                COALESCE(s.staff_name, '') AS staff_name,
+                tl.latitude,
+                tl.longitude,
+                tl.accuracy,
+                tl.beacon_id,
+                tl.beacon_rssi,
+                tl.screen_active,
+                tl.moving,
+                tl.battery_level,
+                tl.tamper_status,
+                tl.created_at + INTERVAL '4 hours' AS created_at_uae
+            FROM tracking_logs tl
+            LEFT JOIN staff s ON s.employee_id = tl.employee_id
+            WHERE tl.latitude IS NOT NULL
+              AND tl.longitude IS NOT NULL
+            ORDER BY tl.employee_id, tl.created_at DESC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": str(exc)})
 
+    tracks = {}
+    for row in rows:
+        (
+            employee_id,
+            staff_name,
+            latitude,
+            longitude,
+            accuracy,
+            beacon_id,
+            beacon_rssi,
+            screen_active,
+            moving,
+            battery_level,
+            tamper_status,
+            created_at,
+        ) = row
+        point = {
+            "employee_id": employee_id,
+            "staff_name": staff_name,
+            "latitude": latitude,
+            "longitude": longitude,
+            "accuracy": accuracy,
+            "beacon_id": beacon_id,
+            "beacon_rssi": beacon_rssi,
+            "screen_active": screen_active,
+            "moving": moving,
+            "battery_level": battery_level,
+            "tamper_status": tamper_status or "normal",
+            "created_at": format_time(created_at),
+        }
+        tracks.setdefault(employee_id, []).append(point)
 
-@app.get("/api/export.csv")
-def export_csv(hours: int = Query(12, ge=1, le=168), employee_id: Optional[str] = None):
-    rows = fetch_tracks(hours=hours, employee_id=employee_id)
-    output = io.StringIO()
-    writer = csv.DictWriter(
-        output,
-        fieldnames=[
-            "employee_id", "staff_name", "latitude", "longitude", "accuracy",
-            "beacon_id", "beacon_rssi", "screen_active", "moving",
-            "battery_level", "tamper_status", "created_at",
-        ],
-    )
-    writer.writeheader()
-    writer.writerows(rows)
-    return Response(
-        content=output.getvalue(),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=eastern_lights_tracks.csv"},
-    )
+    # Database query returns newest first. Reverse each track so path lines draw oldest to newest.
+    for employee_id in tracks:
+        tracks[employee_id].reverse()
+
+    return {"tracks": tracks}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -205,21 +199,21 @@ def dashboard():
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT DISTINCT ON (t.employee_id)
-                t.employee_id,
+            SELECT DISTINCT ON (tl.employee_id)
+                tl.employee_id,
                 COALESCE(s.staff_name, '') AS staff_name,
-                t.latitude,
-                t.longitude,
-                t.beacon_id,
-                t.beacon_rssi,
-                t.screen_active,
-                t.moving,
-                t.battery_level,
-                t.tamper_status,
-                t.created_at + INTERVAL '4 hours' AS created_at_uae
-            FROM tracking_logs t
-            LEFT JOIN staff s ON s.employee_id = t.employee_id
-            ORDER BY t.employee_id, t.created_at DESC
+                tl.latitude,
+                tl.longitude,
+                tl.beacon_id,
+                tl.beacon_rssi,
+                tl.screen_active,
+                tl.moving,
+                tl.battery_level,
+                tl.tamper_status,
+                tl.created_at + INTERVAL '4 hours' AS created_at_uae
+            FROM tracking_logs tl
+            LEFT JOIN staff s ON s.employee_id = tl.employee_id
+            ORDER BY tl.employee_id, tl.created_at DESC
             """
         )
         rows = cur.fetchall()
@@ -237,19 +231,18 @@ def dashboard():
         maps_link = "-"
         if lat is not None and lon is not None:
             maps_link = f'<a target="_blank" href="https://www.google.com/maps?q={lat},{lon}">{lat}, {lon}</a>'
-        created_txt = created.strftime("%Y-%m-%d %H:%M:%S") if created else "-"
         table_rows += f"""
         <tr>
-            <td>{emp}</td>
-            <td>{staff_name or '-'}</td>
+            <td>{safe_text(emp)}</td>
+            <td>{safe_text(staff_name)}</td>
             <td>{maps_link}</td>
-            <td>{beacon or '-'}</td>
+            <td>{safe_text(beacon)}</td>
             <td>{rssi if rssi is not None else '-'}</td>
             <td><span class="{'good' if screen else 'bad'}">{'Active' if screen else 'Inactive'}</span></td>
             <td>{'Moving' if moving else 'Still'}</td>
             <td>{battery if battery is not None else '-'}%</td>
             <td>{tamper or 'normal'}</td>
-            <td>{created_txt}</td>
+            <td>{format_time(created)}</td>
         </tr>
         """
 
@@ -265,10 +258,11 @@ def dashboard():
             body {{ font-family: Arial, sans-serif; background:#f4f6f8; margin:0; padding:20px; }}
             .top {{ background:#111f4d; color:white; padding:18px; border-radius:14px; margin-bottom:18px; }}
             h1 {{ margin:0; font-size:26px; }}
-            .nav a {{ display:inline-block; background:white; color:#111f4d; padding:8px 12px; border-radius:8px; margin-top:10px; margin-right:8px; text-decoration:none; font-weight:bold; }}
+            .nav {{ margin-top:12px; }}
+            .nav a {{ background:white; color:#111f4d; padding:8px 12px; border-radius:8px; text-decoration:none; font-weight:bold; margin-right:8px; }}
             .card {{ background:white; padding:16px; border-radius:14px; box-shadow:0 2px 12px rgba(0,0,0,.08); overflow-x:auto; }}
-            table {{ width:100%; border-collapse:collapse; min-width:1050px; }}
-            th, td {{ padding:12px; border-bottom:1px solid #e5e7eb; text-align:left; font-size:14px; white-space:nowrap; }}
+            table {{ width:100%; border-collapse:collapse; min-width:1100px; }}
+            th, td {{ padding:12px; border-bottom:1px solid #e5e7eb; text-align:left; font-size:14px; }}
             th {{ background:#eef2ff; color:#111f4d; }}
             .good {{ color:#15803d; font-weight:bold; }}
             .bad {{ color:#dc2626; font-weight:bold; }}
@@ -280,14 +274,22 @@ def dashboard():
         <div class="top">
             <h1>Eastern Lights Staff Dashboard</h1>
             <div>Live tracking dashboard - UAE time</div>
-            <div class="nav"><a href="/">Dashboard</a><a href="/map">Map View</a><a href="/api/export.csv">Export CSV</a></div>
+            <div class="nav"><a href="/">Dashboard</a><a href="/map">Map View</a></div>
         </div>
         {error_html}
         <div class="card">
             <table>
                 <tr>
-                    <th>Employee ID</th><th>Name</th><th>GPS</th><th>Beacon</th><th>RSSI</th>
-                    <th>Screen</th><th>Movement</th><th>Battery</th><th>Tamper</th><th>Last Update UAE</th>
+                    <th>Employee ID</th>
+                    <th>Staff Name</th>
+                    <th>GPS</th>
+                    <th>Beacon</th>
+                    <th>RSSI</th>
+                    <th>Screen</th>
+                    <th>Movement</th>
+                    <th>Battery</th>
+                    <th>Tamper</th>
+                    <th>Last Update UAE</th>
                 </tr>
                 {table_rows}
             </table>
@@ -300,274 +302,125 @@ def dashboard():
 @app.get("/map", response_class=HTMLResponse)
 def map_view():
     return """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Eastern Lights Map View</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <style>
-        html, body { height:100%; margin:0; font-family:Arial, sans-serif; }
-        .top { background:#071229; color:white; padding:12px 16px; }
-        .top h1 { margin:0; font-size:22px; }
-        .nav a, .nav button { display:inline-block; background:white; color:#071229; padding:7px 10px; border-radius:7px; margin:6px 6px 0 0; text-decoration:none; font-weight:bold; border:0; cursor:pointer; }
-        #map { height: calc(100vh - 110px); width:100%; }
-        .panel { position:absolute; top:125px; right:12px; z-index:1000; background:white; padding:10px; border-radius:10px; box-shadow:0 2px 12px rgba(0,0,0,.25); width:280px; max-height:65vh; overflow:auto; font-size:13px; }
-        .panel input, .panel select { width:100%; box-sizing:border-box; margin:4px 0 8px; padding:7px; }
-        .legend { position:absolute; left:12px; bottom:22px; z-index:1000; background:white; padding:10px; border-radius:10px; box-shadow:0 2px 12px rgba(0,0,0,.25); font-size:12px; }
-        .staff-marker { color:white; border-radius:18px; padding:5px 9px; border:2px solid white; box-shadow:0 2px 8px rgba(0,0,0,.45); font-weight:bold; white-space:nowrap; }
-        .popup-title { font-weight:bold; font-size:16px; margin-bottom:6px; }
-        .popup-row { margin:3px 0; }
-        .status-good { color:#15803d; font-weight:bold; }
-        .status-bad { color:#dc2626; font-weight:bold; }
-        .stop-item { border-bottom:1px solid #e5e7eb; padding:6px 0; }
-        .small { color:#555; font-size:12px; }
-    </style>
-</head>
-<body>
-    <div class="top">
-        <h1>Eastern Lights Staff Map</h1>
-        <div>FULL MAP VERSION v2: Layer toggle, live tracks, speed, stops, geofence, playback, search, and CSV export</div>
-        <div class="nav">
-            <a href="/">Dashboard</a>
-            <a href="/map">Map View</a>
-            <a href="/api/export.csv" id="exportLink">Export CSV</a>
-            <button onclick="loadData()">Refresh</button>
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Eastern Lights Map View</title>
+        <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+        <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+        <style>
+            body { margin:0; font-family:Arial, sans-serif; background:#f4f6f8; }
+            .top { background:#111f4d; color:white; padding:14px 18px; }
+            h1 { margin:0; font-size:24px; }
+            .nav { margin-top:10px; }
+            .nav a { background:white; color:#111f4d; padding:7px 11px; border-radius:8px; text-decoration:none; font-weight:bold; margin-right:8px; }
+            #map { height: calc(100vh - 105px); width:100%; }
+            .popup-title { font-weight:bold; font-size:16px; margin-bottom:6px; }
+            .popup-row { margin:3px 0; }
+            .tag { display:inline-block; padding:3px 7px; border-radius:999px; background:#eef2ff; margin:2px 2px 2px 0; font-size:12px; }
+            .status-good { color:#15803d; font-weight:bold; }
+            .status-bad { color:#dc2626; font-weight:bold; }
+            .legend { position:absolute; bottom:18px; left:18px; background:white; padding:10px 12px; border-radius:10px; z-index:999; box-shadow:0 2px 8px rgba(0,0,0,.2); font-size:13px; }
+        </style>
+    </head>
+    <body>
+        <div class="top">
+            <h1>Eastern Lights Staff Map</h1>
+            <div>Location tracks, latest staff position, and live details</div>
+            <div class="nav"><a href="/">Dashboard</a><a href="/map">Map View</a></div>
         </div>
-    </div>
-    <div id="map"></div>
-    <div class="panel">
-        <b>Controls</b>
-        <label>Search staff / ID</label>
-        <input id="searchBox" placeholder="Example: 2 or Leon" oninput="renderAll()" />
-        <label>History hours</label>
-        <select id="hours" onchange="loadData()">
-            <option value="1">Last 1 hour</option>
-            <option value="6">Last 6 hours</option>
-            <option value="12" selected>Last 12 hours</option>
-            <option value="24">Today / 24 hours</option>
-            <option value="72">Last 3 days</option>
-            <option value="168">Last 7 days</option>
-        </select>
-        <label>Auto refresh</label>
-        <select id="refreshRate" onchange="resetTimer()">
-            <option value="0">Off</option>
-            <option value="30000">30 seconds</option>
-            <option value="60000" selected>60 seconds</option>
-            <option value="120000">2 minutes</option>
-        </select>
-        <button style="width:100%; padding:8px;" onclick="playback()">Playback tracks</button>
-        <button style="width:100%; padding:8px; margin-top:6px;" onclick="toggleGeofence()">Toggle geofence circles</button>
-        <hr>
-        <b>Detected stops / time spent</b>
-        <div class="small">Stop = staff remains within about 75 m for 10+ minutes.</div>
-        <div id="stops"></div>
-    </div>
-    <div class="legend">Blue/green marker = latest staff position<br>Line = movement track<br>Circle = detected stop/geofence<br>Use layer selector top-right</div>
+        <div id="map"></div>
+        <div class="legend">Auto-refresh: 60 seconds<br>Latest marker + track line per employee</div>
+        <script>
+            const map = L.map('map').setView([25.2048, 55.2708], 11);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '&copy; OpenStreetMap contributors'
+            }).addTo(map);
 
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script>
-        const map = L.map('map').setView([25.2048, 55.2708], 11);
+            let layerGroup = L.layerGroup().addTo(map);
 
-        const street = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
-            attribution: 'Tiles © Esri', maxZoom: 19
-        });
-        const imagery = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-            attribution: 'Tiles © Esri', maxZoom: 19
-        });
-        const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap contributors', maxZoom: 19
-        });
-        street.addTo(map);
-        L.control.layers({
-            'Street Map': street,
-            'Satellite Imagery': imagery,
-            'OpenStreetMap Backup': osm
-        }).addTo(map);
-
-        let data = [];
-        let layerGroup = L.layerGroup().addTo(map);
-        let geofenceVisible = true;
-        let timer = null;
-
-        function distanceMeters(a, b) {
-            const R = 6371000;
-            const lat1 = a.latitude * Math.PI / 180;
-            const lat2 = b.latitude * Math.PI / 180;
-            const dLat = (b.latitude - a.latitude) * Math.PI / 180;
-            const dLon = (b.longitude - a.longitude) * Math.PI / 180;
-            const x = Math.sin(dLat/2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon/2) ** 2;
-            return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
-        }
-
-        function parseTime(s) {
-            return new Date(s.replace(' ', 'T'));
-        }
-
-        function minutesBetween(a, b) {
-            return Math.max(0, (parseTime(b.created_at) - parseTime(a.created_at)) / 60000);
-        }
-
-        function speedKmh(a, b) {
-            const mins = minutesBetween(a, b);
-            if (mins <= 0) return 0;
-            return (distanceMeters(a,b) / 1000) / (mins / 60);
-        }
-
-        function markerHtml(employeeId, moving, battery) {
-            const bg = moving ? '#16a34a' : '#2563eb';
-            const batteryText = battery === null || battery === undefined ? '-' : battery + '%';
-            return `<div class="staff-marker" style="background:${bg};">ID ${employeeId} | ${batteryText}</div>`;
-        }
-
-        function popupHtml(p, spd, stopText) {
-            const screenClass = p.screen_active ? 'status-good' : 'status-bad';
-            return `
-                <div class="popup-title">Employee ID: ${p.employee_id}</div>
-                <div class="popup-row"><b>Name:</b> ${p.staff_name || '-'}</div>
-                <div class="popup-row"><b>GPS:</b> ${p.latitude}, ${p.longitude}</div>
-                <div class="popup-row"><b>Accuracy:</b> ${p.accuracy ?? '-'} m</div>
-                <div class="popup-row"><b>Speed:</b> ${spd.toFixed(1)} km/h</div>
-                <div class="popup-row"><b>Screen:</b> <span class="${screenClass}">${p.screen_active ? 'Active' : 'Inactive'}</span></div>
-                <div class="popup-row"><b>Movement:</b> ${p.moving ? 'Moving' : 'Still'}</div>
-                <div class="popup-row"><b>Battery:</b> ${p.battery_level ?? '-'}%</div>
-                <div class="popup-row"><b>Beacon:</b> ${p.beacon_id || '-'}</div>
-                <div class="popup-row"><b>RSSI:</b> ${p.beacon_rssi ?? '-'}</div>
-                <div class="popup-row"><b>Tamper:</b> ${p.tamper_status || 'normal'}</div>
-                <div class="popup-row"><b>Last update UAE:</b> ${p.created_at}</div>
-                <div class="popup-row"><b>Time near current place:</b> ${stopText}</div>
-                <div class="popup-row"><a target="_blank" href="https://www.google.com/maps?q=${p.latitude},${p.longitude}">Open in Google Maps</a></div>
-            `;
-        }
-
-        function groupByEmployee(items) {
-            const grouped = {};
-            items.forEach(p => {
-                const key = String(p.employee_id);
-                if (!grouped[key]) grouped[key] = [];
-                grouped[key].push(p);
-            });
-            return grouped;
-        }
-
-        function currentPlaceTime(points) {
-            if (points.length < 2) return '0 min';
-            const latest = points[points.length - 1];
-            let start = latest;
-            for (let i = points.length - 2; i >= 0; i--) {
-                if (distanceMeters(points[i], latest) <= 75) start = points[i];
-                else break;
+            function markerHtml(employeeId, moving, battery) {
+                const bg = moving ? '#16a34a' : '#2563eb';
+                const batteryText = battery === null || battery === undefined ? '-' : battery + '%';
+                return `<div style="background:${bg}; color:white; border-radius:18px; padding:5px 8px; border:2px solid white; box-shadow:0 2px 6px rgba(0,0,0,.35); font-size:12px; font-weight:bold; white-space:nowrap;">ID ${employeeId} | ${batteryText}</div>`;
             }
-            const mins = minutesBetween(start, latest);
-            if (mins < 60) return `${Math.round(mins)} min`;
-            return `${Math.floor(mins/60)} hr ${Math.round(mins%60)} min`;
-        }
 
-        function detectStops(points) {
-            const stops = [];
-            if (points.length < 2) return stops;
-            let start = points[0];
-            let last = points[0];
-            for (let i = 1; i < points.length; i++) {
-                const p = points[i];
-                if (distanceMeters(start, p) <= 75) {
-                    last = p;
-                } else {
-                    const mins = minutesBetween(start, last);
-                    if (mins >= 10) stops.push({ employee_id:start.employee_id, staff_name:start.staff_name, latitude:start.latitude, longitude:start.longitude, start:start.created_at, end:last.created_at, minutes:mins });
-                    start = p;
-                    last = p;
+            function popupHtml(p) {
+                const screenClass = p.screen_active ? 'status-good' : 'status-bad';
+                return `
+                    <div class="popup-title">Employee ID: ${p.employee_id}</div>
+                    <div class="popup-row"><b>Name:</b> ${p.staff_name || '-'}</div>
+                    <div class="popup-row"><b>GPS:</b> ${p.latitude}, ${p.longitude}</div>
+                    <div class="popup-row"><b>Accuracy:</b> ${p.accuracy ?? '-'} m</div>
+                    <div class="popup-row"><b>Last Update UAE:</b> ${p.created_at}</div>
+                    <div class="popup-row">
+                        <span class="tag">Battery: ${p.battery_level ?? '-'}%</span>
+                        <span class="tag">Movement: ${p.moving ? 'Moving' : 'Still'}</span>
+                        <span class="tag ${screenClass}">Screen: ${p.screen_active ? 'Active' : 'Inactive'}</span>
+                    </div>
+                    <div class="popup-row">
+                        <span class="tag">Beacon: ${p.beacon_id || '-'}</span>
+                        <span class="tag">RSSI: ${p.beacon_rssi ?? '-'}</span>
+                        <span class="tag">Tamper: ${p.tamper_status || 'normal'}</span>
+                    </div>
+                    <div class="popup-row"><a target="_blank" href="https://www.google.com/maps?q=${p.latitude},${p.longitude}">Open in Google Maps</a></div>
+                `;
+            }
+
+            async function loadTracks() {
+                try {
+                    const response = await fetch('/api/tracks?limit=500');
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+
+                    layerGroup.clearLayers();
+                    const bounds = [];
+                    const tracks = data.tracks || {};
+
+                    Object.keys(tracks).forEach((employeeId) => {
+                        const points = tracks[employeeId];
+                        if (!points || points.length === 0) return;
+
+                        const latlngs = points.map(p => [p.latitude, p.longitude]);
+                        latlngs.forEach(x => bounds.push(x));
+
+                        if (latlngs.length > 1) {
+                            L.polyline(latlngs, { weight: 4, opacity: 0.65 }).addTo(layerGroup);
+                        }
+
+                        // Add small historical dots
+                        points.slice(0, -1).forEach((p) => {
+                            L.circleMarker([p.latitude, p.longitude], { radius: 4, weight: 1, opacity: 0.7, fillOpacity: 0.5 })
+                                .bindPopup(popupHtml(p))
+                                .addTo(layerGroup);
+                        });
+
+                        const latest = points[points.length - 1];
+                        const icon = L.divIcon({
+                            className: '',
+                            html: markerHtml(latest.employee_id, latest.moving, latest.battery_level),
+                            iconSize: [120, 30],
+                            iconAnchor: [20, 15]
+                        });
+                        L.marker([latest.latitude, latest.longitude], { icon })
+                            .bindPopup(popupHtml(latest))
+                            .addTo(layerGroup);
+                    });
+
+                    if (bounds.length > 0) {
+                        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
+                    }
+                } catch (err) {
+                    console.error(err);
+                    alert('Unable to load map data: ' + err.message);
                 }
             }
-            const mins = minutesBetween(start, last);
-            if (mins >= 10) stops.push({ employee_id:start.employee_id, staff_name:start.staff_name, latitude:start.latitude, longitude:start.longitude, start:start.created_at, end:last.created_at, minutes:mins });
-            return stops;
-        }
 
-        function renderStops(grouped) {
-            const div = document.getElementById('stops');
-            let allStops = [];
-            Object.values(grouped).forEach(points => allStops = allStops.concat(detectStops(points)));
-            allStops = allStops.sort((a,b) => b.minutes - a.minutes).slice(0, 15);
-            if (allStops.length === 0) {
-                div.innerHTML = '<div class="small">No 10+ minute stops detected in selected period.</div>';
-                return;
-            }
-            div.innerHTML = allStops.map(s => `<div class="stop-item"><b>ID ${s.employee_id}</b> ${s.staff_name || ''}<br>${Math.round(s.minutes)} min<br><span class="small">${s.start} to ${s.end}</span></div>`).join('');
-        }
-
-        function renderAll() {
-            layerGroup.clearLayers();
-            const search = document.getElementById('searchBox').value.toLowerCase().trim();
-            const filtered = data.filter(p => !search || String(p.employee_id).toLowerCase().includes(search) || String(p.staff_name || '').toLowerCase().includes(search));
-            const grouped = groupByEmployee(filtered);
-            let bounds = [];
-
-            Object.entries(grouped).forEach(([emp, points]) => {
-                if (!points.length) return;
-                const latlngs = points.map(p => [p.latitude, p.longitude]);
-                bounds = bounds.concat(latlngs);
-                L.polyline(latlngs, {weight:4, opacity:0.75}).addTo(layerGroup);
-
-                const latest = points[points.length - 1];
-                const previous = points.length > 1 ? points[points.length - 2] : latest;
-                const spd = speedKmh(previous, latest);
-                const stopText = currentPlaceTime(points);
-
-                const icon = L.divIcon({ html: markerHtml(latest.employee_id, latest.moving, latest.battery_level), className:'', iconSize:null });
-                L.marker([latest.latitude, latest.longitude], {icon}).bindPopup(popupHtml(latest, spd, stopText)).addTo(layerGroup);
-
-                if (geofenceVisible) {
-                    L.circle([latest.latitude, latest.longitude], {radius:75, weight:1, fillOpacity:0.08}).addTo(layerGroup);
-                }
-            });
-
-            renderStops(grouped);
-            if (bounds.length) map.fitBounds(bounds, {padding:[40,40], maxZoom:17});
-        }
-
-        async function loadData() {
-            const hours = document.getElementById('hours').value;
-            document.getElementById('exportLink').href = `/api/export.csv?hours=${hours}`;
-            try {
-                const res = await fetch(`/api/tracks?hours=${hours}`);
-                const json = await res.json();
-                data = json.tracks || [];
-                renderAll();
-            } catch (e) {
-                alert('Could not load tracking data. Check Render logs or /api/tracks.');
-                console.error(e);
-            }
-        }
-
-        function toggleGeofence() {
-            geofenceVisible = !geofenceVisible;
-            renderAll();
-        }
-
-        function resetTimer() {
-            if (timer) clearInterval(timer);
-            const rate = Number(document.getElementById('refreshRate').value);
-            if (rate > 0) timer = setInterval(loadData, rate);
-        }
-
-        function playback() {
-            layerGroup.clearLayers();
-            const grouped = groupByEmployee(data);
-            Object.values(grouped).forEach(points => {
-                let i = 0;
-                const id = setInterval(() => {
-                    if (i >= points.length) { clearInterval(id); return; }
-                    const p = points[i];
-                    L.circleMarker([p.latitude, p.longitude], {radius:5}).bindPopup(`ID ${p.employee_id}<br>${p.created_at}`).addTo(layerGroup);
-                    i++;
-                }, 250);
-            });
-        }
-
-        loadData();
-        resetTimer();
-    </script>
-</body>
-</html>
+            loadTracks();
+            setInterval(loadTracks, 60000);
+        </script>
+    </body>
+    </html>
     """
