@@ -383,10 +383,6 @@ def map_view():
             'Street Map': street,
             'Satellite Imagery': imagery,
             'OpenStreetMap Backup': osm
-             overlays,
-            {
-                position: 'topleft'
-            }
         }).addTo(map);
 
         let data = [];
