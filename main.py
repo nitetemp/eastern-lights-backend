@@ -382,7 +382,7 @@ def map_view():
         L.control.layers({
             'Street Map': street,
             'Satellite Imagery': imagery,
-            'OpenStreetMap Backup': osm,
+            'OpenStreetMap Backup': osm
              overlays,
             {
                 position: 'topleft'
