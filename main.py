@@ -334,9 +334,9 @@ def map_view():
         <div class="legend">Auto-refresh: 60 seconds<br>Latest marker + track line per employee</div>
         <script>
             const map = L.map('map').setView([25.2048, 55.2708], 11);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
                 maxZoom: 19,
-                attribution: '&copy; OpenStreetMap contributors'
+                attribution: '&copy; OpenStreetMap &copy; CARTO'
             }).addTo(map);
 
             let layerGroup = L.layerGroup().addTo(map);
