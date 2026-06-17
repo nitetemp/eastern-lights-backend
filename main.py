@@ -334,11 +334,10 @@ def map_view():
         <div class="legend">Auto-refresh: 60 seconds<br>Latest marker + track line per employee</div>
         <script>
             const map = L.map('map').setView([25.2048, 55.2708], 11);
-            L.tileLayer(
-              'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
-               { attribution: 'Tiles © Esri',
-                 maxZoom: 19      }
-            ).addTo(map);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                maxZoom: 19,
+                attribution: '&copy; OpenStreetMap contributors'
+            }).addTo(map);
 
             let layerGroup = L.layerGroup().addTo(map);
 
