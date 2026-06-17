@@ -15,7 +15,7 @@ app = FastAPI(title="Eastern Lights Backend")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 API_KEY = os.getenv("API_KEY", "eastern-lights-secret-key")
-APP_VERSION = "FULL_MAP_FEATURES_2026_06_17_v2"
+APP_VERSION = "FULL_MAP_FEATURES_2026_06_17_v4_STABLE_UI"
 
 
 def get_conn():
@@ -55,7 +55,7 @@ def health():
 
 @app.get("/version")
 def version():
-    return {"version": APP_VERSION, "features": ["layer_toggle", "tracks", "staff_markers", "stops_time_spent", "speed", "geofence", "playback", "search", "csv_export", "uae_time"]}
+    return {"version": APP_VERSION, "features": ["new_control_panel_layout", "layer_toggle", "tracks", "staff_markers", "stops_time_spent", "speed", "geofence", "playback", "search", "csv_export", "uae_time"]}
 
 
 @app.post("/register")
@@ -307,27 +307,64 @@ def map_view():
     <title>Eastern Lights Map View</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
-        html, body { height:100%; margin:0; font-family:Arial, sans-serif; }
-        .top { background:#071229; color:white; padding:12px 16px; }
-        .top h1 { margin:0; font-size:22px; }
+        html, body { height:100%; margin:0; font-family:Arial, sans-serif; background:#0b1220; }
+        .top { height:86px; background:#071229; color:white; padding:10px 16px; box-sizing:border-box; }
+        .top h1 { margin:0; font-size:22px; line-height:1.2; }
+        .top .subtitle { font-size:13px; opacity:.9; margin-top:2px; }
         .nav a, .nav button { display:inline-block; background:white; color:#071229; padding:7px 10px; border-radius:7px; margin:6px 6px 0 0; text-decoration:none; font-weight:bold; border:0; cursor:pointer; }
-        #map { height: calc(100vh - 110px); width:100%; }
-        .panel { position:absolute; top:125px; right:12px; z-index:1000; background:white; padding:10px; border-radius:10px; box-shadow:0 2px 12px rgba(0,0,0,.25); width:280px; max-height:65vh; overflow:auto; font-size:13px; }
-        .panel input, .panel select { width:100%; box-sizing:border-box; margin:4px 0 8px; padding:7px; }
-        .legend { position:absolute; left:12px; bottom:22px; z-index:1000; background:white; padding:10px; border-radius:10px; box-shadow:0 2px 12px rgba(0,0,0,.25); font-size:12px; }
+        #map { height: calc(100vh - 86px); width:100%; }
+
+        .panel {
+            position:absolute;
+            top:102px;
+            right:14px;
+            z-index:1000;
+            background:rgba(255,255,255,.96);
+            padding:12px;
+            border-radius:14px;
+            box-shadow:0 4px 18px rgba(0,0,0,.30);
+            width:320px;
+            max-height:calc(100vh - 132px);
+            overflow:auto;
+            font-size:13px;
+            backdrop-filter: blur(4px);
+        }
+        .panel h3 { margin:0 0 8px; color:#071229; font-size:17px; }
+        .control-block { margin-bottom:10px; }
+        .control-block label { display:block; font-weight:bold; color:#1f2937; margin-bottom:4px; }
+        .panel input, .panel select, .panel button {
+            width:100%; box-sizing:border-box; margin:0; padding:8px;
+            border:1px solid #cbd5e1; border-radius:8px; background:white;
+        }
+        .button-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; }
+        .panel button { background:#111f4d; color:white; font-weight:bold; cursor:pointer; border:0; }
+        .toggles { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:6px; }
+        .toggle-item { font-size:12px; background:#f1f5f9; padding:7px; border-radius:8px; display:flex; gap:5px; align-items:center; }
+        .toggle-item input { width:auto; }
+
+        .legend { position:absolute; left:12px; bottom:22px; z-index:1000; background:rgba(255,255,255,.96); padding:10px; border-radius:10px; box-shadow:0 2px 12px rgba(0,0,0,.25); font-size:12px; }
         .staff-marker { color:white; border-radius:18px; padding:5px 9px; border:2px solid white; box-shadow:0 2px 8px rgba(0,0,0,.45); font-weight:bold; white-space:nowrap; }
         .popup-title { font-weight:bold; font-size:16px; margin-bottom:6px; }
         .popup-row { margin:3px 0; }
         .status-good { color:#15803d; font-weight:bold; }
         .status-bad { color:#dc2626; font-weight:bold; }
+        .stop-list { max-height:180px; overflow:auto; margin-top:6px; }
         .stop-item { border-bottom:1px solid #e5e7eb; padding:6px 0; }
         .small { color:#555; font-size:12px; }
+        .leaflet-control-layers { display:none !important; }
+
+        @media (max-width: 760px) {
+            .top { height:96px; }
+            #map { height: calc(100vh - 96px); }
+            .panel { left:10px; right:10px; top:106px; width:auto; max-height:42vh; }
+            .legend { left:10px; bottom:10px; }
+        }
     </style>
 </head>
 <body>
     <div class="top">
         <h1>Eastern Lights Staff Map</h1>
-        <div>FULL MAP VERSION v2: Layer toggle, live tracks, speed, stops, geofence, playback, search, and CSV export</div>
+        <div class="subtitle">New layout: map layer, search, history, playback, stops, geofence, export</div>
         <div class="nav">
             <a href="/">Dashboard</a>
             <a href="/map">Map View</a>
@@ -335,39 +372,72 @@ def map_view():
             <button onclick="loadData()">Refresh</button>
         </div>
     </div>
+
     <div id="map"></div>
+
     <div class="panel">
-        <b>Controls</b>
-        <label>Search staff / ID</label>
-        <input id="searchBox" placeholder="Example: 2 or Leon" oninput="renderAll()" />
-        <label>History hours</label>
-        <select id="hours" onchange="loadData()">
-            <option value="1">Last 1 hour</option>
-            <option value="6">Last 6 hours</option>
-            <option value="12" selected>Last 12 hours</option>
-            <option value="24">Today / 24 hours</option>
-            <option value="72">Last 3 days</option>
-            <option value="168">Last 7 days</option>
-        </select>
-        <label>Auto refresh</label>
-        <select id="refreshRate" onchange="resetTimer()">
-            <option value="0">Off</option>
-            <option value="30000">30 seconds</option>
-            <option value="60000" selected>60 seconds</option>
-            <option value="120000">2 minutes</option>
-        </select>
-        <button style="width:100%; padding:8px;" onclick="playback()">Playback tracks</button>
-        <button style="width:100%; padding:8px; margin-top:6px;" onclick="toggleGeofence()">Toggle geofence circles</button>
+        <h3>Eastern Lights Controls</h3>
+
+        <div class="control-block">
+            <label>Search staff / ID</label>
+            <input id="searchBox" placeholder="Example: 2 or Leon" oninput="renderAll()" />
+        </div>
+
+        <div class="control-block">
+            <label>Map Layer</label>
+            <select id="mapStyle" onchange="switchBaseLayer()">
+                <option value="street" selected>Street Map - roads and labels</option>
+                <option value="satellite">Satellite Imagery</option>
+                <option value="hybrid">Satellite + Labels</option>
+                <option value="osm">OpenStreetMap Backup</option>
+            </select>
+        </div>
+
+        <div class="control-block">
+            <label>History</label>
+            <select id="hours" onchange="loadData()">
+                <option value="1">Last 1 hour</option>
+                <option value="6">Last 6 hours</option>
+                <option value="12" selected>Last 12 hours</option>
+                <option value="24">Today / 24 hours</option>
+                <option value="72">Last 3 days</option>
+                <option value="168">Last 7 days</option>
+            </select>
+        </div>
+
+        <div class="control-block">
+            <label>Auto refresh</label>
+            <select id="refreshRate" onchange="resetTimer()">
+                <option value="0">Off</option>
+                <option value="30000">30 seconds</option>
+                <option value="60000" selected>60 seconds</option>
+                <option value="120000">2 minutes</option>
+            </select>
+        </div>
+
+        <div class="toggles">
+            <label class="toggle-item"><input type="checkbox" id="showTracks" checked onchange="renderAll()"> Tracks</label>
+            <label class="toggle-item"><input type="checkbox" id="showGeofence" checked onchange="renderAll()"> Geofence</label>
+            <label class="toggle-item"><input type="checkbox" id="showStops" checked onchange="renderAll()"> Stops</label>
+            <label class="toggle-item"><input type="checkbox" id="fitMap" checked> Auto-fit</label>
+        </div>
+
+        <div class="button-row">
+            <button onclick="playback()">Playback</button>
+            <button onclick="loadData()">Reload</button>
+        </div>
+
         <hr>
         <b>Detected stops / time spent</b>
         <div class="small">Stop = staff remains within about 75 m for 10+ minutes.</div>
-        <div id="stops"></div>
+        <div id="stops" class="stop-list"></div>
     </div>
-    <div class="legend">Blue/green marker = latest staff position<br>Line = movement track<br>Circle = detected stop/geofence<br>Use layer selector top-right</div>
+
+    <div class="legend">Layer selection is now inside the right control panel.<br>Blue = still/latest, green = moving, line = route, circle = stop/geofence.</div>
 
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script>
-        const map = L.map('map').setView([25.2048, 55.2708], 11);
+        const map = L.map('map', { zoomControl: true }).setView([25.2048, 55.2708], 11);
 
         const street = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
             attribution: 'Tiles © Esri', maxZoom: 19
@@ -375,20 +445,31 @@ def map_view():
         const imagery = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
             attribution: 'Tiles © Esri', maxZoom: 19
         });
+        const labels = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Labels © Esri', maxZoom: 19
+        });
+        const roads = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Roads © Esri', maxZoom: 19
+        });
+        const hybrid = L.layerGroup([imagery, roads, labels]);
         const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors', maxZoom: 19
         });
-        street.addTo(map);
-        L.control.layers({
-            'Street Map': street,
-            'Satellite Imagery': imagery,
-            'OpenStreetMap Backup': osm
-        }).addTo(map);
+
+        const baseLayers = { street, satellite: imagery, hybrid, osm };
+        let currentBase = street;
+        currentBase.addTo(map);
 
         let data = [];
         let layerGroup = L.layerGroup().addTo(map);
-        let geofenceVisible = true;
         let timer = null;
+
+        function switchBaseLayer() {
+            const selected = document.getElementById('mapStyle').value;
+            if (currentBase) map.removeLayer(currentBase);
+            currentBase = baseLayers[selected] || street;
+            currentBase.addTo(map);
+        }
 
         function distanceMeters(a, b) {
             const R = 6371000;
@@ -400,14 +481,8 @@ def map_view():
             return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
         }
 
-        function parseTime(s) {
-            return new Date(s.replace(' ', 'T'));
-        }
-
-        function minutesBetween(a, b) {
-            return Math.max(0, (parseTime(b.created_at) - parseTime(a.created_at)) / 60000);
-        }
-
+        function parseTime(s) { return new Date(s.replace(' ', 'T')); }
+        function minutesBetween(a, b) { return Math.max(0, (parseTime(b.created_at) - parseTime(a.created_at)) / 60000); }
         function speedKmh(a, b) {
             const mins = minutesBetween(a, b);
             if (mins <= 0) return 0;
@@ -486,6 +561,10 @@ def map_view():
 
         function renderStops(grouped) {
             const div = document.getElementById('stops');
+            if (!document.getElementById('showStops').checked) {
+                div.innerHTML = '<div class="small">Stop display is off.</div>';
+                return;
+            }
             let allStops = [];
             Object.values(grouped).forEach(points => allStops = allStops.concat(detectStops(points)));
             allStops = allStops.sort((a,b) => b.minutes - a.minutes).slice(0, 15);
@@ -499,6 +578,9 @@ def map_view():
         function renderAll() {
             layerGroup.clearLayers();
             const search = document.getElementById('searchBox').value.toLowerCase().trim();
+            const showTracks = document.getElementById('showTracks').checked;
+            const showGeofence = document.getElementById('showGeofence').checked;
+            const shouldFit = document.getElementById('fitMap').checked;
             const filtered = data.filter(p => !search || String(p.employee_id).toLowerCase().includes(search) || String(p.staff_name || '').toLowerCase().includes(search));
             const grouped = groupByEmployee(filtered);
             let bounds = [];
@@ -507,7 +589,7 @@ def map_view():
                 if (!points.length) return;
                 const latlngs = points.map(p => [p.latitude, p.longitude]);
                 bounds = bounds.concat(latlngs);
-                L.polyline(latlngs, {weight:4, opacity:0.75}).addTo(layerGroup);
+                if (showTracks) L.polyline(latlngs, {weight:4, opacity:0.75}).addTo(layerGroup);
 
                 const latest = points[points.length - 1];
                 const previous = points.length > 1 ? points[points.length - 2] : latest;
@@ -517,13 +599,13 @@ def map_view():
                 const icon = L.divIcon({ html: markerHtml(latest.employee_id, latest.moving, latest.battery_level), className:'', iconSize:null });
                 L.marker([latest.latitude, latest.longitude], {icon}).bindPopup(popupHtml(latest, spd, stopText)).addTo(layerGroup);
 
-                if (geofenceVisible) {
+                if (showGeofence) {
                     L.circle([latest.latitude, latest.longitude], {radius:75, weight:1, fillOpacity:0.08}).addTo(layerGroup);
                 }
             });
 
             renderStops(grouped);
-            if (bounds.length) map.fitBounds(bounds, {padding:[40,40], maxZoom:17});
+            if (bounds.length && shouldFit) map.fitBounds(bounds, {padding:[40,40], maxZoom:17});
         }
 
         async function loadData() {
@@ -538,11 +620,6 @@ def map_view():
                 alert('Could not load tracking data. Check Render logs or /api/tracks.');
                 console.error(e);
             }
-        }
-
-        function toggleGeofence() {
-            geofenceVisible = !geofenceVisible;
-            renderAll();
         }
 
         function resetTimer() {
