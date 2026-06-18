@@ -15,7 +15,7 @@ app = FastAPI(title="Eastern Lights Backend")
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 API_KEY = os.getenv("API_KEY", "eastern-lights-secret-key")
-APP_VERSION = "FULL_MAP_FEATURES_2026_06_17_v4_STABLE_UI"
+APP_VERSION = "FULL_MAP_FEATURES_2026_06_17_v4_STABLE_UI_BEACON_TAGS"
 
 
 def get_conn():
@@ -489,10 +489,20 @@ def map_view():
             return (distanceMeters(a,b) / 1000) / (mins / 60);
         }
 
-        function markerHtml(employeeId, moving, battery) {
+        function shortBeaconText(beacon, rssi) {
+            const beaconText = beacon && beacon !== 'none' ? beacon : 'No beacon';
+            const rssiText = rssi === null || rssi === undefined || rssi === -999 ? '-' : rssi + ' dBm';
+            return `${beaconText} | ${rssiText}`;
+        }
+
+        function markerHtml(employeeId, moving, battery, beacon, rssi) {
             const bg = moving ? '#16a34a' : '#2563eb';
             const batteryText = battery === null || battery === undefined ? '-' : battery + '%';
-            return `<div class="staff-marker" style="background:${bg};">ID ${employeeId} | ${batteryText}</div>`;
+            const beaconLine = shortBeaconText(beacon, rssi);
+            return `<div class="staff-marker" style="background:${bg};">
+                <div>ID ${employeeId} | ${batteryText}</div>
+                <div style="font-size:11px; font-weight:600; opacity:.95; margin-top:2px;">${beaconLine}</div>
+            </div>`;
         }
 
         function popupHtml(p, spd, stopText) {
@@ -596,7 +606,7 @@ def map_view():
                 const spd = speedKmh(previous, latest);
                 const stopText = currentPlaceTime(points);
 
-                const icon = L.divIcon({ html: markerHtml(latest.employee_id, latest.moving, latest.battery_level), className:'', iconSize:null });
+                const icon = L.divIcon({ html: markerHtml(latest.employee_id, latest.moving, latest.battery_level, latest.beacon_id, latest.beacon_rssi), className:'', iconSize:null });
                 L.marker([latest.latitude, latest.longitude], {icon}).bindPopup(popupHtml(latest, spd, stopText)).addTo(layerGroup);
 
                 if (showGeofence) {
